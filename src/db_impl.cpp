@@ -1,11 +1,11 @@
 #include "db.h"
 #include "wal.h"
+#include "skiplist.h"
 
 #include <sys/stat.h>
 #include <sys/types.h>
 
 #include <cerrno>
-#include <map>
 
 namespace minidb {
 
@@ -22,38 +22,39 @@ public:
     // that a crash could erase.
     bool Put(const std::string& key, const std::string& value) override {
         if (!wal_->Append(RecordType::kPut, key, value)) return false;
-        data_[key] = value;
+        data_.Insert(key, value);
         return true;
     }
 
     std::optional<std::string> Get(const std::string& key) override {
-        auto it = data_.find(key);
-        if (it == data_.end()) return std::nullopt;
-        return it->second;
+        const SkipList::Node* n = data_.Find(key);
+        if (n == nullptr) return std::nullopt;
+        return n->value;
     }
 
     bool Delete(const std::string& key) override {
         if (!wal_->Append(RecordType::kDelete, key, "")) return false;
-        data_.erase(key);
+        data_.Erase(key);
         return true;
     }
 
     std::vector<std::pair<std::string, std::string>> Scan(
         const std::string& start, const std::string& end) override {
         std::vector<std::pair<std::string, std::string>> result;
-        for (auto it = data_.lower_bound(start); it != data_.end(); ++it) {
-            if (!end.empty() && it->first >= end) break;
-            result.push_back({it->first, it->second});
+        for (const SkipList::Node* n = data_.LowerBound(start); n != nullptr;
+             n = SkipList::Next(n)) {
+            if (!end.empty() && n->key >= end) break;
+            result.push_back({n->key, n->value});
         }
         return result;
     }
 
-    std::map<std::string, std::string>& mutable_data() { return data_; }
+    SkipList& mutable_data() { return data_; }
 
 private:
     Options opts_;
     std::unique_ptr<WAL> wal_;
-    std::map<std::string, std::string> data_;
+    SkipList data_;
 };
 
 }  // namespace
@@ -63,24 +64,23 @@ std::unique_ptr<DB> DB::Open(const std::string& dir, const Options& opts) {
 
     const std::string wal_path = dir + "/wal.log";
 
-    // Replay before opening for writing, so a corrupt log fails the open
-    // instead of getting appended to.
-    std::map<std::string, std::string> recovered;
-    bool ok = WAL::Replay(wal_path, [&](RecordType type, const std::string& key,
-                                        const std::string& value) {
-        if (type == RecordType::kPut) {
-            recovered[key] = value;
-        } else {
-            recovered.erase(key);
-        }
-    });
-    if (!ok) return nullptr;
-
     auto wal = WAL::Open(wal_path, opts);
     if (!wal) return nullptr;
 
     auto db = std::make_unique<DBImpl>(opts, std::move(wal));
-    db->mutable_data() = std::move(recovered);
+
+    // Replay directly into the memtable. SkipList is non-copyable, so there is
+    // no temporary map to move in afterwards.
+    bool ok = WAL::Replay(wal_path, [&](RecordType type, const std::string& key,
+                                        const std::string& value) {
+        if (type == RecordType::kPut) {
+            db->mutable_data().Insert(key, value);
+        } else {
+            db->mutable_data().Erase(key);
+        }
+    });
+    if (!ok) return nullptr;
+
     return db;
 }
 
