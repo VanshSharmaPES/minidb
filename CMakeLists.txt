@@ -26,3 +26,9 @@ target_link_libraries(minidb_tests PRIVATE minidb GTest::gtest_main)
 
 include(GoogleTest)
 gtest_discover_tests(minidb_tests)
+
+# Standalone binary: it forks and kills itself, which does not belong inside
+# the gtest process.
+add_executable(crash_test tests/crash_test.cpp)
+target_link_libraries(crash_test PRIVATE minidb)
+add_test(NAME CrashTest COMMAND crash_test 100)

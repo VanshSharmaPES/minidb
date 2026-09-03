@@ -4,7 +4,8 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/stat.h>
-
+#include <chrono>
+#include <iostream>
 #include <cstdio>
 #include <cstdlib>
 #include <string>
@@ -157,4 +158,35 @@ TEST(WAL, BatchedModeStillReplaysWhatWasSynced) {
         EXPECT_EQ(db->Get("k" + std::to_string(i)).value_or("MISSING"),
                   "v" + std::to_string(i));
     }
+}
+
+TEST(WAL, SyncCostBenchmark) {
+    const int kWrites = 10000;
+
+    auto run = [&](bool sync_every, size_t interval) {
+        std::string dir = FreshDir("wal_bench");
+        minidb::Options opts;
+        opts.sync_every_write = sync_every;
+        opts.sync_interval = interval;
+        auto db = minidb::DB::Open(dir, opts);
+        EXPECT_NE(db, nullptr);
+
+        auto start = std::chrono::steady_clock::now();
+        for (int i = 0; i < kWrites; ++i) {
+            db->Put("key" + std::to_string(i), "value" + std::to_string(i));
+        }
+        auto elapsed = std::chrono::steady_clock::now() - start;
+        return std::chrono::duration<double>(elapsed).count();
+    };
+
+    double synced = run(true, 0);
+    double batched = run(false, 1000);
+
+    std::cout << "\n  sync_every_write=true : " << synced << " s ("
+              << (kWrites / synced) << " writes/sec)\n"
+              << "  sync_interval=1000    : " << batched << " s ("
+              << (kWrites / batched) << " writes/sec)\n"
+              << "  ratio                 : " << (synced / batched) << "x\n\n";
+
+    SUCCEED();
 }
