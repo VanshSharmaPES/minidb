@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 #include "db.h"
-
+#include <cstdlib>
 #include <map>
 #include <random>
 #include <string>
@@ -31,7 +31,10 @@ std::vector<std::pair<std::string, std::string>> ExpectedScan(
 }
 
 void RunOracle(int iterations) {
+    (void)system("rm -rf /tmp/minidb_oracle");
     minidb::Options opts;
+    opts.sync_every_write = false;
+    opts.sync_interval = 1000;
     auto db = minidb::DB::Open("/tmp/minidb_oracle", opts);
     ASSERT_NE(db, nullptr);
 
@@ -97,6 +100,7 @@ TEST(Oracle, MatchesStdMapLarge) {
 
 TEST(Oracle, EmptyValueIsDistinctFromMissingKey) {
     minidb::Options opts;
+    (void)system("rm -rf /tmp/minidb_empty");
     auto db = minidb::DB::Open("/tmp/minidb_empty", opts);
     ASSERT_NE(db, nullptr);
 
@@ -113,6 +117,7 @@ TEST(Oracle, EmptyValueIsDistinctFromMissingKey) {
 
 TEST(Oracle, DeleteOnMissingKeyReturnsTrue) {
     minidb::Options opts;
+    (void)system("rm -rf /tmp/minidb_del");
     auto db = minidb::DB::Open("/tmp/minidb_del", opts);
     ASSERT_NE(db, nullptr);
     EXPECT_TRUE(db->Delete("never_existed"));
@@ -120,6 +125,7 @@ TEST(Oracle, DeleteOnMissingKeyReturnsTrue) {
 
 TEST(Oracle, ScanIsHalfOpen) {
     minidb::Options opts;
+    (void)system("rm -rf /tmp/minidb_scan");
     auto db = minidb::DB::Open("/tmp/minidb_scan", opts);
     ASSERT_NE(db, nullptr);
 
