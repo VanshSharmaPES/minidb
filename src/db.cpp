@@ -1,2 +1,7 @@
 #include "db.h"
-namespace minidb { int version() { return 1; } }
+
+namespace minidb {
+
+DB::~DB() = default;
+
+}  // namespace minidb
