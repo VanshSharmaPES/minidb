@@ -7,7 +7,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 find_package(ZLIB REQUIRED)
 
-add_library(minidb src/db.cpp src/db_impl.cpp src/wal.cpp)
+add_library(minidb src/db.cpp src/db_impl.cpp src/wal.cpp src/sstable.cpp)
 target_include_directories(minidb PUBLIC include PRIVATE src)
 target_link_libraries(minidb PUBLIC ZLIB::ZLIB)
 
@@ -21,7 +21,8 @@ set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(googletest)
 
 enable_testing()
-add_executable(minidb_tests tests/test_smoke.cpp tests/test_oracle.cpp tests/test_wal.cpp)
+add_executable(minidb_tests tests/test_smoke.cpp tests/test_oracle.cpp tests/test_wal.cpp tests/test_sstable.cpp)
+target_include_directories(minidb_tests PRIVATE src)
 target_link_libraries(minidb_tests PRIVATE minidb GTest::gtest_main)
 
 include(GoogleTest)
