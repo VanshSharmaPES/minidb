@@ -20,6 +20,13 @@ struct Options {
     // A power cut can lose at most (sync_interval - 1) acknowledged writes,
     // since the write that triggers the sync makes everything before it durable.
     size_t sync_interval = 100;
+
+    // Approximate memtable size, in key+value bytes, that triggers a flush
+    // to an immutable on-disk SSTable. Approximate because the running total
+    // is updated per-write, not recomputed exactly; good enough for a size
+    // trigger. 0 disables flushing, keeping the whole database in memory
+    // (and in the WAL) as M1 did.
+    size_t flush_threshold_bytes = 4 * 1024 * 1024;
 };
 
 class DB {

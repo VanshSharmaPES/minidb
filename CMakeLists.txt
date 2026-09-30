@@ -21,7 +21,7 @@ set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(googletest)
 
 enable_testing()
-add_executable(minidb_tests tests/test_smoke.cpp tests/test_oracle.cpp tests/test_wal.cpp tests/test_sstable.cpp)
+add_executable(minidb_tests tests/test_smoke.cpp tests/test_oracle.cpp tests/test_wal.cpp tests/test_sstable.cpp tests/test_flush.cpp)
 target_include_directories(minidb_tests PRIVATE src)
 target_link_libraries(minidb_tests PRIVATE minidb GTest::gtest_main)
 

@@ -6,9 +6,9 @@ It is not a SQL database. There is no query language, no transactions, no networ
 
 ## Status
 
-M1 is complete: durable writes with crash-safe recovery, backed by a write-ahead log and an in-memory skip list.
+M1 and M2 are complete: durable writes with crash-safe recovery (write-ahead log plus an in-memory skip list), and flushing the memtable to immutable on-disk SSTables once it crosses a size threshold, with reads and scans merging across the memtable and all flushed files.
 
-Still to come are flushing the memtable to on-disk sorted files (M2), compaction (M3), and benchmarks against SQLite (M4).
+Still to come are compaction (M3) and benchmarks against SQLite (M4).
 
 ## API
 
@@ -58,6 +58,24 @@ Damage in the middle is different. If a bad record has valid records after it, a
 
 Integers are little-endian. The type byte exists because `Put(k, "")` and `Delete(k)` are otherwise identical on disk: both have a zero-length value.
 
+## Flushing and SSTable format
+
+Once the memtable's approximate size crosses `flush_threshold_bytes`, `Put`/`Delete` trigger a flush: the memtable's sorted contents are written to a new immutable SSTable, the file is renamed into place atomically, the memtable is cleared, and the WAL is reopened fresh since it now only needs to cover writes since the flush.
+
+The WAL is only reset after the SSTable write is fsynced. If a crash lands between those two steps, the next `Open` replays the same WAL records into a new memtable — a harmless duplicate of what the SSTable already has, since `Put`/`Delete` are idempotent upserts, not data loss.
+
+`Get` and `Scan` check the memtable first, then SSTables newest-to-oldest, so a later flush's value or tombstone always shadows an earlier one for the same key. Tombstones are kept in SSTables rather than dropped, for the same reason: discarding one early would let an older file's stale value for that key reappear. They are only safe to drop during compaction (M3), once every older file has been merged past them.
+
+An SSTable file has three parts, in this order:
+
+| Block | Contents |
+|---|---|
+| data | Sorted records: `type` (1 byte), `key_len`/`key`, `value_len`/`value` (0-length for a delete) |
+| index | Sparse index, one entry per `kIndexInterval` records: `key_len`/`key`, 8-byte byte offset into the data block |
+| footer | Fixed 24 bytes at end of file: `index_offset` (8), `index_count` (4), `data_crc32` (4) over the whole data block, `magic` (8) |
+
+The footer is fixed-size and always the last 24 bytes, so `Open` seeks straight to it instead of scanning, then reads just the index it points to; the data block stays on disk and is read on demand. Integers are little-endian, matching the WAL. A missing, truncated, or CRC/magic-mismatched file fails `Open` outright — unlike the WAL, an SSTable has no tail to forgive, since it is written once and fsynced before anything ever opens it.
+
 ## Testing
 
 The oracle test runs 500,000 randomized operations against both the engine and a `std::map` reference model, checking that the results match after every single operation rather than only at the end. Keys are drawn from a space of 1,000, which is deliberate: with random unique keys the overwrite and delete paths would almost never be exercised. The seed is fixed so a failure can be reproduced exactly.
@@ -92,11 +110,12 @@ The crash test can be run directly with a different iteration count:
 
 ## Layout
 
-    include/db.h      public API and the durability contract
-    src/wal.{h,cpp}   write-ahead log: append, fsync policy, replay
-    src/skiplist.h    memtable
-    src/db_impl.cpp   ties the WAL and the memtable together
-    tests/            oracle test, WAL unit tests, crash harness
+    include/db.h        public API and the durability contract
+    src/wal.{h,cpp}     write-ahead log: append, fsync policy, replay
+    src/skiplist.h      memtable
+    src/sstable.{h,cpp} immutable on-disk sorted file: write, open, get, scan
+    src/db_impl.cpp     ties the WAL, memtable, and SSTables together; flush
+    tests/              oracle test, WAL/SSTable unit tests, flush tests, crash harness
 
 ## Design notes
 
