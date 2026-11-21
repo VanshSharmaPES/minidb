@@ -27,6 +27,15 @@ struct Options {
     // trigger. 0 disables flushing, keeping the whole database in memory
     // (and in the WAL) as M1 did.
     size_t flush_threshold_bytes = 4 * 1024 * 1024;
+
+    // Number of on-disk SSTables that triggers a compaction: once a flush
+    // brings the file count to this value, every existing SSTable is merged
+    // into one. File count rather than total byte size, because flushes
+    // already produce roughly-uniform-sized files (bounded by
+    // flush_threshold_bytes), so counting files is an equally good proxy for
+    // "how much read amplification has built up" without needing to stat
+    // every file on each flush. 0 disables compaction.
+    size_t compaction_trigger_files = 4;
 };
 
 class DB {

@@ -8,7 +8,7 @@ It is not a SQL database. There is no query language, no transactions, no networ
 
 M1 and M2 are complete: durable writes with crash-safe recovery (write-ahead log plus an in-memory skip list), and flushing the memtable to immutable on-disk SSTables once it crosses a size threshold, with reads and scans merging across the memtable and all flushed files.
 
-Still to come are compaction (M3) and benchmarks against SQLite (M4).
+Still to come are compaction (M3, policy chosen and documented; merge/tombstone-drop/crash-safety implementation not yet wired in) and benchmarks against SQLite (M4).
 
 ## API
 
@@ -75,6 +75,16 @@ An SSTable file has three parts, in this order:
 | footer | Fixed 24 bytes at end of file: `index_offset` (8), `index_count` (4), `data_crc32` (4) over the whole data block, `magic` (8) |
 
 The footer is fixed-size and always the last 24 bytes, so `Open` seeks straight to it instead of scanning, then reads just the index it points to; the data block stays on disk and is read on demand. Integers are little-endian, matching the WAL. A missing, truncated, or CRC/magic-mismatched file fails `Open` outright — unlike the WAL, an SSTable has no tail to forgive, since it is written once and fsynced before anything ever opens it.
+
+## Compaction
+
+The trigger is size-tiered by file count, not total byte size: once a flush brings the number of on-disk SSTables to `compaction_trigger_files`, every existing SSTable is merged into one. File count works as a proxy for read amplification here specifically because flushes already produce roughly uniform-sized files (each one bounded by `flush_threshold_bytes`), so "N files" and "N * flush_threshold_bytes of stale data at worst" track each other closely. That equivalence is what a pure byte-size trigger would otherwise have to compute by statting every file on every flush; counting files gets the same signal from a number `db_impl` already tracks.
+
+Merging all files at once, rather than picking a subset, keeps the scheme simple and keeps `Get`/`Scan` fast: with N SSTables a lookup checks up to N files newest-to-oldest before a compaction, and exactly 1 after. The tradeoff is that a single compaction's cost is proportional to the whole dataset rather than a slice of it, which is the standard size-tiered compromise (write amplification for read amplification) and an acceptable one at this project's scale.
+
+A tombstone can only be dropped once the compaction spans every older file for that key — otherwise a stale value sitting in a file the compaction didn't reach could resurface on a later merge. Compacting "every existing SSTable" at once, rather than an arbitrary subset, is also what makes that condition trivial to check: if the compaction always covers every file, the oldest generation is always included, so any tombstone the merge sees is safe to drop.
+
+The merge itself, the crash-safety argument for it, and wiring the trigger into `DBImpl` are the remaining M3 work; this section will grow to cover them once implemented.
 
 ## Testing
 
