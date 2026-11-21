@@ -7,7 +7,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 find_package(ZLIB REQUIRED)
 
-add_library(minidb src/db.cpp src/db_impl.cpp src/wal.cpp src/sstable.cpp)
+add_library(minidb src/db.cpp src/db_impl.cpp src/wal.cpp src/sstable.cpp src/merging_iterator.cpp)
 target_include_directories(minidb PUBLIC include PRIVATE src)
 target_link_libraries(minidb PUBLIC ZLIB::ZLIB)
 
