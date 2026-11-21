@@ -148,3 +148,64 @@ TEST(SSTable, TruncatedFileFailsOpen) {
 TEST(SSTable, MissingFileFailsOpen) {
     EXPECT_EQ(SSTable::Open("/tmp/does_not_exist.sst"), nullptr);
 }
+
+TEST(SSTable, IteratorWalksEveryRecordInOrderIncludingTombstones) {
+    // More than kIndexInterval (16) records, so the walk crosses several
+    // sparse-index buckets and must not depend on the index at all.
+    std::string path = FreshPath("sst_iter");
+    std::vector<SSTable::Entry> entries;
+    for (int i = 0; i < 100; ++i) {
+        char key[8];
+        std::snprintf(key, sizeof(key), "k%03d", i);
+        bool del = i % 5 == 0;
+        entries.push_back({key, del ? "" : "v" + std::to_string(i), del});
+    }
+    ASSERT_TRUE(SSTable::Write(path, entries));
+
+    auto sst = SSTable::Open(path);
+    ASSERT_NE(sst, nullptr);
+
+    auto it = sst->NewIterator();
+    for (const auto& want : entries) {
+        ASSERT_TRUE(it->Valid()) << "ended early before " << want.key;
+        EXPECT_EQ(it->entry().key, want.key);
+        EXPECT_EQ(it->entry().value, want.value);
+        EXPECT_EQ(it->entry().is_delete, want.is_delete);
+        it->Next();
+    }
+    EXPECT_FALSE(it->Valid());
+    EXPECT_TRUE(it->ok()) << "reaching end of file is not an error";
+}
+
+TEST(SSTable, IteratorOnEmptyFileIsImmediatelyDone) {
+    std::string path = FreshPath("sst_iter_empty");
+    ASSERT_TRUE(SSTable::Write(path, {}));
+    auto sst = SSTable::Open(path);
+    ASSERT_NE(sst, nullptr);
+
+    auto it = sst->NewIterator();
+    EXPECT_FALSE(it->Valid());
+    EXPECT_TRUE(it->ok());
+}
+
+TEST(SSTable, IteratorRejectsOutOfOrderKeys) {
+    // Write does not validate ordering, so this produces a CRC-valid file
+    // whose keys go backwards: exactly the case the iterator's ordering
+    // check exists for.
+    std::string path = FreshPath("sst_iter_unsorted");
+    std::vector<SSTable::Entry> entries = {
+        {"a", "1", false}, {"c", "3", false}, {"b", "2", false},
+    };
+    ASSERT_TRUE(SSTable::Write(path, entries));
+    auto sst = SSTable::Open(path);
+    ASSERT_NE(sst, nullptr);
+
+    auto it = sst->NewIterator();
+    ASSERT_TRUE(it->Valid());
+    it->Next();
+    ASSERT_TRUE(it->Valid());
+    EXPECT_EQ(it->entry().key, "c");
+    it->Next();
+    EXPECT_FALSE(it->Valid());
+    EXPECT_FALSE(it->ok()) << "a backwards key must be an error, not a clean end";
+}

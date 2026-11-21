@@ -279,4 +279,38 @@ std::vector<SSTable::Entry> SSTable::Scan(const std::string& start,
     return result;
 }
 
+std::unique_ptr<SSTable::Iterator> SSTable::NewIterator() const {
+    return std::unique_ptr<Iterator>(new Iterator(this));
+}
+
+SSTable::Iterator::Iterator(const SSTable* table) : table_(table) {
+    ReadCurrent();
+}
+
+void SSTable::Iterator::Next() {
+    if (!valid_) return;
+    std::string prev_key = std::move(current_.key);
+    pos_ = next_;
+    ReadCurrent();
+    // Every consumer of this iterator (the merge, and through it compaction)
+    // assumes keys are strictly increasing within one file. Write only ever
+    // receives sorted, de-duplicated memtable output, so a violation here
+    // means a bug or a corrupt-but-CRC-valid file; fail rather than emit an
+    // out-of-order stream that would produce a broken compacted file.
+    if (valid_ && current_.key <= prev_key) {
+        valid_ = false;
+        ok_ = false;
+    }
+}
+
+void SSTable::Iterator::ReadCurrent() {
+    if (pos_ >= table_->data_end_) {
+        valid_ = false;
+        return;
+    }
+    next_ = ReadRecordAt(table_->fd_, pos_, table_->data_end_, &current_);
+    valid_ = next_ != 0;
+    if (!valid_) ok_ = false;
+}
+
 }  // namespace minidb

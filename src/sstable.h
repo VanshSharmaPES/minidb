@@ -92,6 +92,13 @@ public:
     // Same half-open convention as DB::Scan.
     std::vector<Entry> Scan(const std::string& start, const std::string& end) const;
 
+    // Streaming, front-to-back walk over every record in the file, tombstones
+    // included. Unlike Scan, it holds exactly one record in memory at a time,
+    // which is what lets compaction merge many files without materialising
+    // any of them. The iterator borrows this SSTable and must not outlive it.
+    class Iterator;
+    std::unique_ptr<Iterator> NewIterator() const;
+
 private:
     struct IndexEntry {
         std::string key;
@@ -104,6 +111,37 @@ private:
     int fd_;
     std::vector<IndexEntry> index_;
     uint64_t data_end_;
+};
+
+class SSTable::Iterator {
+public:
+    // True while entry() refers to a record. Goes false at end of file or on
+    // the first failed read; ok() tells the two apart.
+    bool Valid() const { return valid_; }
+
+    // The current record. Only meaningful while Valid().
+    const Entry& entry() const { return current_; }
+
+    void Next();
+
+    // False once a read failed or the file's keys turned out not to be
+    // strictly increasing. Compaction must check this before trusting that
+    // !Valid() meant "end of file": treating a read error as a clean end
+    // would silently drop every record after it from the compacted output.
+    bool ok() const { return ok_; }
+
+private:
+    friend class SSTable;
+    explicit Iterator(const SSTable* table);
+
+    void ReadCurrent();
+
+    const SSTable* table_;
+    uint64_t pos_ = 0;   // offset of current_ in the data block
+    uint64_t next_ = 0;  // offset just past current_
+    Entry current_;
+    bool valid_ = false;
+    bool ok_ = true;
 };
 
 }  // namespace minidb
