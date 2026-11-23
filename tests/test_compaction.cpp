@@ -150,3 +150,76 @@ TEST(CompactionIterator, SourceErrorIsForwarded) {
     Drain(it);
     EXPECT_FALSE(it.ok()) << "a failed source must not look like a finished compaction";
 }
+
+TEST(CompactionIterator, DroppedTombstoneDoesNotUncoverAnOlderValue) {
+    // The newest version of "k" is a tombstone over older values. Dropping
+    // must remove the key outright; if the filter ran before the merge
+    // de-duplicated, an older "k" would win instead and the delete would
+    // be undone.
+    Inputs in("cit_shadow", {
+        {Put("a", "1"), Put("k", "v1")},
+        {Put("k", "v2")},
+        {Del("k"), Put("z", "26")},
+    });
+
+    CompactionIterator drop(in.Iterators(), /*drop_tombstones=*/true);
+    ExpectEntries(Drain(drop), {Put("a", "1"), Put("z", "26")});
+    EXPECT_TRUE(drop.ok());
+
+    CompactionIterator keep(in.Iterators(), /*drop_tombstones=*/false);
+    ExpectEntries(Drain(keep), {Put("a", "1"), Del("k"), Put("z", "26")});
+    EXPECT_TRUE(keep.ok());
+}
+
+TEST(CompactionIterator, PutOverTombstoneSurvivesInBothModes) {
+    // Delete then re-insert: the newest version is a put, so the older
+    // tombstone was already shadowed by the merge and the filter never sees
+    // it. Neither mode may lose the re-inserted value.
+    Inputs in("cit_reinsert", {
+        {Put("k", "first")},
+        {Del("k")},
+        {Put("k", "again")},
+    });
+    for (bool drop : {true, false}) {
+        CompactionIterator it(in.Iterators(), drop);
+        ExpectEntries(Drain(it), {Put("k", "again")});
+        EXPECT_TRUE(it.ok()) << "drop=" << drop;
+    }
+}
+
+TEST(CompactionIterator, AllTombstonesDropToAnEmptyStream) {
+    // Every key's newest version is a tombstone, some of them over older
+    // values, and several in a row: the skip must run until the stream ends,
+    // not stop after one.
+    Inputs in("cit_all_dead", {
+        {Put("a", "1"), Put("b", "2")},
+        {Del("a"), Del("b"), Del("c"), Del("d")},
+    });
+
+    CompactionIterator drop(in.Iterators(), /*drop_tombstones=*/true);
+    EXPECT_FALSE(drop.Valid());
+    EXPECT_TRUE(drop.ok()) << "an empty result is a finished compaction, not an error";
+
+    CompactionIterator keep(in.Iterators(), /*drop_tombstones=*/false);
+    ExpectEntries(Drain(keep), {Del("a"), Del("b"), Del("c"), Del("d")});
+}
+
+TEST(CompactionIterator, ErrorWhileSkippingTombstonesIsStillReported) {
+    // The failure is reached inside the skip loop, after tombstones the
+    // filter consumed without emitting. "b" comes after "d" in the file, so
+    // the source fails there; the stream must end with ok() false rather
+    // than look like it ran out of entries.
+    Inputs in("cit_err_skip", {{Put("a", "1"), Del("c"), Del("d"), Put("b", "2")}});
+    CompactionIterator it(in.Iterators(), /*drop_tombstones=*/true);
+    ExpectEntries(Drain(it), {Put("a", "1")});
+    EXPECT_FALSE(it.ok());
+}
+
+TEST(CompactionIterator, ErrorDuringTheInitialSkipIsStillReported) {
+    // Same, but the failure is hit by the constructor's skip, before the
+    // caller has seen a single entry.
+    Inputs in("cit_err_ctor", {{Del("c"), Del("d"), Put("b", "2")}});
+    CompactionIterator it(in.Iterators(), /*drop_tombstones=*/true);
+    EXPECT_FALSE(it.Valid());
+    EXPECT_FALSE(it.ok());
+}
