@@ -32,6 +32,13 @@ namespace minidb {
 bool CoversOldestGeneration(std::vector<uint64_t> input_seqs,
                             std::vector<uint64_t> live_seqs);
 
+// One input to a compaction: a live SSTable and the sequence number it was
+// written under. The table is borrowed and must outlive the iterator.
+struct CompactionInput {
+    uint64_t seq;
+    const SSTable* table;
+};
+
 // The stream a compaction writes out: the newest-wins merge of its inputs,
 // minus tombstones when they are safe to drop.
 //
@@ -42,11 +49,18 @@ bool CoversOldestGeneration(std::vector<uint64_t> input_seqs,
 // back. Skipping it after the merge has already picked it as the winner
 // drops the key outright, which is the point.
 //
-// Whether to drop is the caller's decision for now, as a plain flag; it must
-// only be true when CoversOldestGeneration holds for these inputs. (M3.3b.3
-// replaces the flag with a factory that makes that call itself.)
+// Whether to drop is decided from sequence numbers, by
+// CoversOldestGeneration, when constructed from CompactionInputs. The older
+// constructor taking a plain flag still exists while callers move off it;
+// with it, the flag must only be true when CoversOldestGeneration holds.
 class CompactionIterator {
 public:
+    // Inputs may be listed in any order: they are merged oldest first by
+    // seq, so newest-wins follows flush order, not the caller's ordering.
+    // Tombstones are dropped only if the inputs are the oldest live files.
+    CompactionIterator(const std::vector<CompactionInput>& inputs,
+                       const std::vector<uint64_t>& live_seqs);
+
     // Sources oldest first, as for MergingIterator.
     CompactionIterator(std::vector<std::unique_ptr<SSTable::Iterator>> sources,
                        bool drop_tombstones);
@@ -61,6 +75,9 @@ public:
     // Forwarded from the merge. As there, !Valid() with !ok() means a source
     // failed and the stream is incomplete, not finished.
     bool ok() const { return merge_.ok(); }
+
+    // Whether this compaction discards tombstones, as decided at construction.
+    bool drops_tombstones() const { return drop_tombstones_; }
 
 private:
     // Advances past any tombstones at the current position when dropping.
