@@ -288,3 +288,14 @@ TEST(CompactionDecision, StaleLiveSetKeepsTombstones) {
     EXPECT_FALSE(it.drops_tombstones());
     ExpectEntries(Drain(it), {Put("a", "1"), Put("b", "2"), Del("c"), Del("k")});
 }
+
+TEST(CompactionDecision, InputsAreMergedInSeqOrderNotListedOrder) {
+    // The caller lists the newer file first. The merge breaks ties by source
+    // position, so without sorting by seq the older value would win.
+    Inputs in("dec_order", {
+        {Put("k", "old"), Put("x", "1")},
+        {Put("k", "new")},
+    });
+    CompactionIterator it({in.Input(1), in.Input(0)}, in.LiveSeqs());
+    ExpectEntries(Drain(it), {Put("k", "new"), Put("x", "1")});
+}
