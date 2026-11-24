@@ -30,6 +30,20 @@ public:
         }
     }
 
+    // File i as a compaction input. Seqs start at kFirstSeq in file order,
+    // so file 0 is the oldest.
+    static constexpr uint64_t kFirstSeq = 10;
+    minidb::CompactionInput Input(size_t i) const {
+        return {kFirstSeq + i, tables_.at(i).get()};
+    }
+
+    // Every file's seq: the live set when these files are all that's on disk.
+    std::vector<uint64_t> LiveSeqs() const {
+        std::vector<uint64_t> seqs;
+        for (size_t i = 0; i < tables_.size(); ++i) seqs.push_back(kFirstSeq + i);
+        return seqs;
+    }
+
     std::vector<std::unique_ptr<SSTable::Iterator>> Iterators() const {
         std::vector<std::unique_ptr<SSTable::Iterator>> its;
         for (const auto& t : tables_) its.push_back(t->NewIterator());
@@ -222,4 +236,55 @@ TEST(CompactionIterator, ErrorDuringTheInitialSkipIsStillReported) {
     CompactionIterator it(in.Iterators(), /*drop_tombstones=*/true);
     EXPECT_FALSE(it.Valid());
     EXPECT_FALSE(it.ok());
+}
+
+// ---- Tombstone decision from sequence numbers -------------------------------
+//
+// Three files, oldest first: "k" is written, then deleted, then unrelated
+// keys arrive with a tombstone for "c" (which never had a value).
+
+namespace {
+
+Inputs DecisionFiles(const std::string& name) {
+    return Inputs(name, {
+        {Put("k", "v")},
+        {Put("a", "1"), Del("k")},
+        {Put("b", "2"), Del("c")},
+    });
+}
+
+}  // namespace
+
+TEST(CompactionDecision, NewestFilesOnlyKeepTombstones) {
+    // File 0 stays behind holding k=v. The compacted output must keep the
+    // tombstone for "k", or reads would fall through to file 0 and find it.
+    Inputs in = DecisionFiles("dec_newest");
+    CompactionIterator it({in.Input(1), in.Input(2)}, in.LiveSeqs());
+    EXPECT_FALSE(it.drops_tombstones());
+    ExpectEntries(Drain(it), {Put("a", "1"), Put("b", "2"), Del("c"), Del("k")});
+}
+
+TEST(CompactionDecision, OldestPrefixDropsTombstones) {
+    Inputs in = DecisionFiles("dec_prefix");
+    CompactionIterator it({in.Input(0), in.Input(1)}, in.LiveSeqs());
+    EXPECT_TRUE(it.drops_tombstones());
+    ExpectEntries(Drain(it), {Put("a", "1")});
+}
+
+TEST(CompactionDecision, AllLiveFilesDropTombstones) {
+    // The current compact-everything policy.
+    Inputs in = DecisionFiles("dec_all");
+    CompactionIterator it({in.Input(0), in.Input(1), in.Input(2)}, in.LiveSeqs());
+    EXPECT_TRUE(it.drops_tombstones());
+    ExpectEntries(Drain(it), {Put("a", "1"), Put("b", "2")});
+}
+
+TEST(CompactionDecision, StaleLiveSetKeepsTombstones) {
+    // The live set no longer contains file 0's seq (as if the caller's view
+    // of the inputs were out of date), and an unknown older file 9 is live.
+    // That is not provably the oldest generation, so tombstones stay.
+    Inputs in = DecisionFiles("dec_stale");
+    CompactionIterator it({in.Input(0), in.Input(1), in.Input(2)}, {9, 11, 12});
+    EXPECT_FALSE(it.drops_tombstones());
+    ExpectEntries(Drain(it), {Put("a", "1"), Put("b", "2"), Del("c"), Del("k")});
 }
