@@ -44,6 +44,23 @@ public:
         return seqs;
     }
 
+    // Every file as an input: with LiveSeqs() that is a compaction covering
+    // the oldest generation (tombstones dropped); with
+    // LiveSeqsWithOlderFile() it is not (tombstones kept).
+    std::vector<minidb::CompactionInput> AllInputs() const {
+        std::vector<minidb::CompactionInput> inputs;
+        for (size_t i = 0; i < tables_.size(); ++i) inputs.push_back(Input(i));
+        return inputs;
+    }
+
+    // The live set if one more file, older than all of these, were still on
+    // disk and left out of the compaction.
+    std::vector<uint64_t> LiveSeqsWithOlderFile() const {
+        std::vector<uint64_t> seqs = LiveSeqs();
+        seqs.insert(seqs.begin(), kFirstSeq - 1);
+        return seqs;
+    }
+
     std::vector<std::unique_ptr<SSTable::Iterator>> Iterators() const {
         std::vector<std::unique_ptr<SSTable::Iterator>> its;
         for (const auto& t : tables_) its.push_back(t->NewIterator());
@@ -129,7 +146,7 @@ TEST(CompactionIterator, KeepingTombstonesMatchesThePlainMerge) {
         {Put("a", "1new"), Del("e")},
     });
     MergingIterator merge(in.Iterators());
-    CompactionIterator keep(in.Iterators(), /*drop_tombstones=*/false);
+    CompactionIterator keep(in.AllInputs(), in.LiveSeqsWithOlderFile());
 
     auto merged = Drain(merge);
     ExpectEntries(Drain(keep), merged);
@@ -142,7 +159,7 @@ TEST(CompactionIterator, DroppingTombstonesEmitsOnlyPuts) {
         {Put("a", "1"), Del("c"), Put("e", "5")},
         {Del("b"), Put("d", "4"), Del("f")},
     });
-    CompactionIterator it(in.Iterators(), /*drop_tombstones=*/true);
+    CompactionIterator it(in.AllInputs(), in.LiveSeqs());
     ExpectEntries(Drain(it), {Put("a", "1"), Put("d", "4"), Put("e", "5")});
     EXPECT_TRUE(it.ok());
 }
@@ -151,7 +168,7 @@ TEST(CompactionIterator, LeadingTombstonesAreSkippedBeforeTheFirstEntry) {
     // The first merged entries are tombstones, so the skip has to happen on
     // construction, not only on Next().
     Inputs in("cit_leading", {{Del("a"), Del("b"), Put("c", "3")}});
-    CompactionIterator it(in.Iterators(), /*drop_tombstones=*/true);
+    CompactionIterator it(in.AllInputs(), in.LiveSeqs());
     ASSERT_TRUE(it.Valid());
     EXPECT_EQ(it.entry().key, "c");
     ExpectEntries(Drain(it), {Put("c", "3")});
@@ -160,7 +177,7 @@ TEST(CompactionIterator, LeadingTombstonesAreSkippedBeforeTheFirstEntry) {
 TEST(CompactionIterator, SourceErrorIsForwarded) {
     // Keys go backwards in this file, so its iterator fails partway through.
     Inputs in("cit_err", {{Put("a", "1"), Put("c", "3"), Put("b", "2")}});
-    CompactionIterator it(in.Iterators(), /*drop_tombstones=*/false);
+    CompactionIterator it(in.AllInputs(), in.LiveSeqsWithOlderFile());
     Drain(it);
     EXPECT_FALSE(it.ok()) << "a failed source must not look like a finished compaction";
 }
@@ -176,11 +193,11 @@ TEST(CompactionIterator, DroppedTombstoneDoesNotUncoverAnOlderValue) {
         {Del("k"), Put("z", "26")},
     });
 
-    CompactionIterator drop(in.Iterators(), /*drop_tombstones=*/true);
+    CompactionIterator drop(in.AllInputs(), in.LiveSeqs());
     ExpectEntries(Drain(drop), {Put("a", "1"), Put("z", "26")});
     EXPECT_TRUE(drop.ok());
 
-    CompactionIterator keep(in.Iterators(), /*drop_tombstones=*/false);
+    CompactionIterator keep(in.AllInputs(), in.LiveSeqsWithOlderFile());
     ExpectEntries(Drain(keep), {Put("a", "1"), Del("k"), Put("z", "26")});
     EXPECT_TRUE(keep.ok());
 }
@@ -194,10 +211,10 @@ TEST(CompactionIterator, PutOverTombstoneSurvivesInBothModes) {
         {Del("k")},
         {Put("k", "again")},
     });
-    for (bool drop : {true, false}) {
-        CompactionIterator it(in.Iterators(), drop);
+    for (const auto& live : {in.LiveSeqs(), in.LiveSeqsWithOlderFile()}) {
+        CompactionIterator it(in.AllInputs(), live);
         ExpectEntries(Drain(it), {Put("k", "again")});
-        EXPECT_TRUE(it.ok()) << "drop=" << drop;
+        EXPECT_TRUE(it.ok()) << "drops_tombstones=" << it.drops_tombstones();
     }
 }
 
@@ -210,11 +227,11 @@ TEST(CompactionIterator, AllTombstonesDropToAnEmptyStream) {
         {Del("a"), Del("b"), Del("c"), Del("d")},
     });
 
-    CompactionIterator drop(in.Iterators(), /*drop_tombstones=*/true);
+    CompactionIterator drop(in.AllInputs(), in.LiveSeqs());
     EXPECT_FALSE(drop.Valid());
     EXPECT_TRUE(drop.ok()) << "an empty result is a finished compaction, not an error";
 
-    CompactionIterator keep(in.Iterators(), /*drop_tombstones=*/false);
+    CompactionIterator keep(in.AllInputs(), in.LiveSeqsWithOlderFile());
     ExpectEntries(Drain(keep), {Del("a"), Del("b"), Del("c"), Del("d")});
 }
 
@@ -224,7 +241,7 @@ TEST(CompactionIterator, ErrorWhileSkippingTombstonesIsStillReported) {
     // the source fails there; the stream must end with ok() false rather
     // than look like it ran out of entries.
     Inputs in("cit_err_skip", {{Put("a", "1"), Del("c"), Del("d"), Put("b", "2")}});
-    CompactionIterator it(in.Iterators(), /*drop_tombstones=*/true);
+    CompactionIterator it(in.AllInputs(), in.LiveSeqs());
     ExpectEntries(Drain(it), {Put("a", "1")});
     EXPECT_FALSE(it.ok());
 }
@@ -233,7 +250,7 @@ TEST(CompactionIterator, ErrorDuringTheInitialSkipIsStillReported) {
     // Same, but the failure is hit by the constructor's skip, before the
     // caller has seen a single entry.
     Inputs in("cit_err_ctor", {{Del("c"), Del("d"), Put("b", "2")}});
-    CompactionIterator it(in.Iterators(), /*drop_tombstones=*/true);
+    CompactionIterator it(in.AllInputs(), in.LiveSeqs());
     EXPECT_FALSE(it.Valid());
     EXPECT_FALSE(it.ok());
 }
