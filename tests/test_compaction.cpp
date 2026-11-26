@@ -7,6 +7,7 @@
 
 #include <memory>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 using minidb::CompactionIterator;
@@ -271,6 +272,13 @@ Inputs DecisionFiles(const std::string& name) {
 }
 
 }  // namespace
+
+// Compile-time guard: callers must not be able to ask for tombstones to be
+// dropped directly. If the flag constructor ever becomes reachable again,
+// this stops compiling.
+static_assert(!std::is_constructible_v<CompactionIterator,
+                                       std::vector<std::unique_ptr<SSTable::Iterator>>, bool>,
+              "the drop-tombstones flag must only be set via CoversOldestGeneration");
 
 TEST(CompactionDecision, NewestFilesOnlyKeepTombstones) {
     // File 0 stays behind holding k=v. The compacted output must keep the

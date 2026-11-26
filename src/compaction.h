@@ -49,10 +49,9 @@ struct CompactionInput {
 // back. Skipping it after the merge has already picked it as the winner
 // drops the key outright, which is the point.
 //
-// Whether to drop is decided from sequence numbers, by
-// CoversOldestGeneration, when constructed from CompactionInputs. The older
-// constructor taking a plain flag still exists while callers move off it;
-// with it, the flag must only be true when CoversOldestGeneration holds.
+// Whether to drop is decided here, from the inputs' sequence numbers via
+// CoversOldestGeneration, never passed in: there is deliberately no public
+// way to ask for tombstones to be dropped, so a caller can't get it wrong.
 class CompactionIterator {
 public:
     // Inputs may be listed in any order: they are merged oldest first by
@@ -60,10 +59,6 @@ public:
     // Tombstones are dropped only if the inputs are the oldest live files.
     CompactionIterator(const std::vector<CompactionInput>& inputs,
                        const std::vector<uint64_t>& live_seqs);
-
-    // Sources oldest first, as for MergingIterator.
-    CompactionIterator(std::vector<std::unique_ptr<SSTable::Iterator>> sources,
-                       bool drop_tombstones);
 
     CompactionIterator(const CompactionIterator&) = delete;
     CompactionIterator& operator=(const CompactionIterator&) = delete;
@@ -80,6 +75,12 @@ public:
     bool drops_tombstones() const { return drop_tombstones_; }
 
 private:
+    // Sources oldest first, as for MergingIterator. Private so that the only
+    // way to reach drop_tombstones = true is through the public constructor's
+    // CoversOldestGeneration check.
+    CompactionIterator(std::vector<std::unique_ptr<SSTable::Iterator>> sources,
+                       bool drop_tombstones);
+
     // Advances past any tombstones at the current position when dropping.
     void SkipDropped();
 
